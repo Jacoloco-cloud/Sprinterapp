@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPS-Laufzeit-App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md text-center border-t-4 border-blue-500">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">Laufzeit-Tracker</h1>
+        <p class="text-gray-600 mb-6">Messe deine Zeit für 100m oder 200m mit GPS.</p>
+        
+        <!-- Distance Selection -->
+        <div class="mb-6 flex justify-center space-x-4">
+            <label class="inline-flex items-center">
+                <input type="radio" class="form-radio text-blue-600" name="target-distance" value="100" checked>
+                <span class="ml-2 text-gray-700 font-semibold">100m</span>
+            </label>
+            <label class="inline-flex items-center">
+                <input type="radio" class="form-radio text-blue-600" name="target-distance" value="200">
+                <span class="ml-2 text-gray-700 font-semibold">200m</span>
+            </label>
+        </div>
+
+        <!-- Display Area -->
+        <div class="space-y-4">
+            <div class="bg-blue-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-500">Distanz</p>
+                <p id="distance" class="text-4xl font-extrabold text-blue-600">0.00 m</p>
+            </div>
+            <div class="bg-gray-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-500">Zeit</p>
+                <p id="time" class="text-4xl font-extrabold text-gray-800">00:00:00</p>
+            </div>
+        </div>
+
+        <!-- Timer Results -->
+        <div class="mt-6 space-y-2">
+            <div class="bg-green-50 p-3 rounded-lg flex justify-between items-center">
+                <p class="text-sm font-semibold text-gray-700">100m Zeit:</p>
+                <p id="time-100m" class="text-xl font-bold text-green-600">-</p>
+            </div>
+            <div class="bg-green-50 p-3 rounded-lg flex justify-between items-center">
+                <p class="text-sm font-semibold text-gray-700">200m Zeit:</p>
+                <p id="time-200m" class="text-xl font-bold text-green-600">-</p>
+            </div>
+        </div>
+
+        <!-- Message Box -->
+        <div id="message-box" class="mt-6 p-3 bg-yellow-100 text-yellow-800 rounded-lg text-sm transition-opacity duration-300 opacity-0">
+            Warte auf GPS-Signal...
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="mt-8 flex justify-center space-x-4">
+            <button id="startButton" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 transform hover:scale-105">
+                Start für <span>100m</span>
+            </button>
+            <button id="stopButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 opacity-50 cursor-not-allowed" disabled>Stop</button>
+            <button id="resetButton" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 transform hover:scale-105">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const resetButton = document.getElementById('resetButton');
+        const distanceEl = document.getElementById('distance');
+        const timeEl = document.getElementById('time');
+        const time100mEl = document.getElementById('time-100m');
+        const time200mEl = document.getElementById('time-200m');
+        const messageBox = document.getElementById('message-box');
+        const distanceRadios = document.querySelectorAll('input[name="target-distance"]');
+        const startButtonSpan = startButton.querySelector('span');
+
+        // State Variables
+        let timer = null;
+        let startTime = 0;
+        let lastPosition = null;
+        let totalDistance = 0;
+        let watchId = null;
+        let isRunning = false;
+        let hasHit100m = false;
+        let hasHit200m = false;
+        let targetDistance = 100; // Default to 100m
+
+        // Update the start button text when a radio button is selected
+        distanceRadios.forEach(radio => {
+            radio.addEventListener('change', (event) => {
+                targetDistance = parseInt(event.target.value);
+                startButtonSpan.textContent = `${targetDistance}m`;
+            });
+        });
+
+        // Haversine formula to calculate distance between two lat/lon coordinates
+        function haversineDistance(coords1, coords2) {
+            const toRad = (x) => x * Math.PI / 180;
+            const R = 6371e3; // Earth's radius in meters
+            const lat1 = toRad(coords1.latitude);
+            const lat2 = toRad(coords2.latitude);
+            const deltaLat = toRad(coords2.latitude - coords1.latitude);
+            const deltaLon = toRad(coords2.longitude - coords1.longitude);
+
+            const a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+                      Math.cos(lat1) * Math.cos(lat2) *
+                      Math.sin(deltaLon / 2) * Math.sin(deltaLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return R * c; // Distance in meters
+        }
+
+        // Function to update the timer display
+        function updateTimer() {
+            if (!isRunning) return;
+            const elapsedTime = Date.now() - startTime;
+            const hours = String(Math.floor(elapsedTime / 3600000)).padStart(2, '0');
+            const minutes = String(Math.floor((elapsedTime % 3600000) / 60000)).padStart(2, '0');
+            const seconds = String(Math.floor((elapsedTime % 60000) / 1000)).padStart(2, '0');
+            timeEl.textContent = `${minutes}:${seconds}:${String(elapsedTime % 1000).padStart(3, '0').substring(0, 2)}`;
+        }
+
+        // Function to show a temporary message
+        function showMessage(text, color = 'bg-yellow-100', duration = 3000) {
+            messageBox.textContent = text;
+            messageBox.className = `mt-6 p-3 ${color} rounded-lg text-sm transition-opacity duration-300 opacity-100`;
+            setTimeout(() => {
+                messageBox.classList.remove('opacity-100');
+                messageBox.classList.add('opacity-0');
+            }, duration);
+        }
+
+        // Handle GPS position updates
+        function handlePositionUpdate(position) {
+            if (!isRunning) {
+                lastPosition = position.coords;
+                return;
+            }
+
+            // If we have a previous position, calculate the distance
+            if (lastPosition) {
+                const distanceDelta = haversineDistance(lastPosition, position.coords);
+                totalDistance += distanceDelta;
+                distanceEl.textContent = `${totalDistance.toFixed(2)} m`;
+
+                // Check for 100m mark
+                if (totalDistance >= 100 && !hasHit100m) {
+                    const elapsedTime = Date.now() - startTime;
+                    const seconds = (elapsedTime / 1000).toFixed(2);
+                    time100mEl.textContent = `${seconds} s`;
+                    hasHit100m = true;
+                    if (targetDistance === 100) {
+                        showMessage('100m erreicht! Timer gestoppt.', 'bg-green-100', 5000);
+                        stopTimer();
+                    } else {
+                        showMessage('100m erreicht!', 'bg-green-100');
+                    }
+                }
+                
+                // Check for 200m mark and automatically stop
+                if (totalDistance >= 200 && !hasHit200m) {
+                    const elapsedTime = Date.now() - startTime;
+                    const seconds = (elapsedTime / 1000).toFixed(2);
+                    time200mEl.textContent = `${seconds} s`;
+                    hasHit200m = true;
+                    if (targetDistance === 200) {
+                        showMessage('200m erreicht! Timer gestoppt.', 'bg-green-100', 5000);
+                        stopTimer();
+                    }
+                }
+            }
+            lastPosition = position.coords;
+        }
+
+        // Error handler for geolocation
+        function handleGeoError(error) {
+            let errorMessage = '';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMessage = "Du musst den Zugriff auf deinen Standort erlauben.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMessage = "Standortinformationen sind nicht verfügbar.";
+                    break;
+                case error.TIMEOUT:
+                    errorMessage = "Die Anfrage für den Standort hat zu lange gedauert.";
+                    break;
+                default:
+                    errorMessage = "Ein unbekannter Fehler ist aufgetreten.";
+                    break;
+            }
+            showMessage(`Fehler: ${errorMessage}`, 'bg-red-100');
+            stopTimer(); // Stop the process if there's an error
+        }
+
+        // Start button handler
+        startButton.addEventListener('click', () => {
+            if (!isRunning) {
+                // Request permissions and start watching the position
+                if ('geolocation' in navigator) {
+                    showMessage('Warte auf GPS-Signal...', 'bg-yellow-100');
+                    // Reset all state for a new run
+                    resetState();
+                    
+                    const options = {
+                        enableHighAccuracy: true,
+                        timeout: 5000,
+                        maximumAge: 0
+                    };
+                    watchId = navigator.geolocation.watchPosition(handlePositionUpdate, handleGeoError, options);
+
+                    // Start the timer display
+                    startTime = Date.now();
+                    timer = setInterval(updateTimer, 10);
+                    isRunning = true;
+                    
+                    // Update button states
+                    startButton.disabled = true;
+                    startButton.classList.add('opacity-50', 'cursor-not-allowed');
+                    stopButton.disabled = false;
+                    stopButton.classList.remove('opacity-50', 'cursor-not-allowed');
+                    distanceRadios.forEach(radio => radio.disabled = true);
+                } else {
+                    showMessage('Geolocation wird von deinem Browser nicht unterstützt.', 'bg-red-100');
+                }
+            }
+        });
+
+        // Stop button handler
+        stopButton.addEventListener('click', () => {
+            stopTimer();
+            showMessage('Timer manuell gestoppt.', 'bg-red-100');
+        });
+
+        // Reset button handler
+        resetButton.addEventListener('click', () => {
+            stopTimer();
+            resetState();
+            showMessage('App wurde zurückgesetzt.', 'bg-gray-100');
+        });
+
+        // Function to stop the timer and geolocation
+        function stopTimer() {
+            if (timer) clearInterval(timer);
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+            isRunning = false;
+
+            // Update button states
+            startButton.disabled = false;
+            startButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            stopButton.disabled = true;
+            stopButton.classList.add('opacity-50', 'cursor-not-allowed');
+            distanceRadios.forEach(radio => radio.disabled = false);
+        }
+
+        // Function to reset all state variables
+        function resetState() {
+            totalDistance = 0;
+            lastPosition = null;
+            hasHit100m = false;
+            hasHit200m = false;
+            
+            distanceEl.textContent = '0.00 m';
+            timeEl.textContent = '00:00:00';
+            time100mEl.textContent = '-';
+            time200mEl.textContent = '-';
+            // Ensure radio buttons are enabled on reset
+            distanceRadios.forEach(radio => radio.disabled = false);
+        }
+
+    </script>
+</body>
+</html>
